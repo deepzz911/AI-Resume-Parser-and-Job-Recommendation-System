@@ -10,6 +10,10 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.neighbors import NearestNeighbors
 import spacy
 import nltk
+import streamlit as st
+
+st.title("AI Resume Parser and Job Recommendation System")
+st.write("Upload your resume to get job recommendations!")
 
 # -------------------------
 # SETUP
