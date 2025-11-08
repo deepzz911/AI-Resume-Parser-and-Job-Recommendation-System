@@ -1,96 +1,87 @@
-from pyresparser import ResumeParser
-from docx import Document
-from flask import Flask, render_template, redirect, request
-import numpy as np
-import pandas as pd
+import os
 import re
+import nltk
+import spacy
+import pandas as pd
+import numpy as np
+from docx import Document
 from ftfy import fix_text
-from nltk.corpus import stopwords
+from pyresparser import ResumeParser
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.neighbors import NearestNeighbors
-import spacy
-import nltk
 import streamlit as st
-
-st.title("AI Resume Parser and Job Recommendation System")
-st.write("Upload your resume to get job recommendations!")
 
 # -------------------------
 # SETUP
 # -------------------------
-nltk.data.path.append('C:\\Users\\Dell/nltk_data')
-nltk.download('stopwords')
+@st.cache_resource
+def setup_nltk():
+    data_dir = os.path.join(os.path.dirname(__file__), "nltk_data")
+    os.makedirs(data_dir, exist_ok=True)
+    nltk.data.path.append(data_dir)
+    nltk.download('stopwords', download_dir=data_dir, quiet=True)
+    nltk.download('punkt', download_dir=data_dir, quiet=True)
+    nltk.download('wordnet', download_dir=data_dir, quiet=True)
+    nltk.download('averaged_perceptron_tagger', download_dir=data_dir, quiet=True)
+    nltk.download('maxent_ne_chunker', download_dir=data_dir, quiet=True)
+    nltk.download('words', download_dir=data_dir, quiet=True)
+    return True
 
-stopw = set(stopwords.words('english'))
+setup_nltk()
+stopw = set(nltk.corpus.stopwords.words('english'))
+
+# Load SpaCy model
+try:
+    nlp = spacy.load('en_core_web_sm')
+except OSError:
+    from spacy.cli import download
+    download('en_core_web_sm')
+    nlp = spacy.load('en_core_web_sm')
 
 # -------------------------
-# LOAD SCRAPED JOB DATA
+# LOAD JOB DATA
 # -------------------------
-df = pd.read_csv('all_jobs.csv')
+@st.cache_data
+def load_data():
+    df = pd.read_csv('all_jobs.csv')
+    df.rename(columns={
+        'title': 'Position',
+        'company': 'Company',
+        'location': 'Location',
+        'description': 'Job_Description'
+    }, inplace=True)
+    df['clean'] = df['Job_Description'].apply(
+        lambda x: ' '.join([word for word in str(x).split() if len(word) > 2 and word.lower() not in stopw])
+    )
+    return df
 
-# Rename columns to match Flask logic
-df.rename(columns={
-    'title': 'Position',
-    'company': 'Company',
-    'location': 'Location',
-    'description': 'Job_Description'
-}, inplace=True)
-
-# Clean & preprocess job descriptions
-df['test'] = df['Job_Description'].apply(
-    lambda x: ' '.join([word for word in str(x).split() if len(word) > 2 and word.lower() not in stopw])
-)
-print(df["Location"])
+df = load_data()
 
 # -------------------------
-# FLASK APP
+# STREAMLIT UI
 # -------------------------
-app = Flask(__name__)
+st.title("💼 AI Resume Parser and Job Recommendation System")
+st.write("Upload your resume to get personalized job recommendations!")
 
-@app.route('/')
-def hello():
-    return render_template("index.html")
+uploaded_file = st.file_uploader("📂 Upload your Resume (.docx or .pdf)", type=["docx", "pdf"])
 
-@app.route('/upload')
-def upload():
-    return render_template('upload.html')
+if uploaded_file is not None:
+    with open(uploaded_file.name, "wb") as f:
+        f.write(uploaded_file.getbuffer())
 
-@app.route("/home")
-def home():
-    return redirect('/')
+    st.success(f"Uploaded: {uploaded_file.name}")
 
-@app.route('/submit', methods=['GET', 'POST'])
-def submit_data():
-    if request.method == 'POST':
-        try:
-            f = request.files['userfile']
-            f.save(f.filename)
-            print("Saved file:", f.filename)
+    try:
+        data = ResumeParser(uploaded_file.name).get_extracted_data()
+        resume_skills = data.get('skills', [])
+        st.subheader("🧠 Extracted Skills")
+        st.write(", ".join(resume_skills))
 
-            # Try reading .docx file and extracting text
-            try:
-                doc = Document(f.filename)
-                print("Document opened successfully")
-                text = ""
-                for paragraph in doc.paragraphs:
-                    text += paragraph.text + "\n"
-                
-                # Load SpaCy model
-                nlp = spacy.load('en_core_web_sm', disable=["parser", "ner"])
-                data = ResumeParser(f.filename, custom_nlp=nlp).get_extracted_data()
-            
-            except Exception as e:
-                print("Error opening document:", e)
-                data = ResumeParser(f.filename).get_extracted_data()
-
-            # Extract skills from resume
-            resume = data.get('skills', [])
-            print("Extracted skills:", resume)
-
-            skills = [' '.join(resume)]
-            org_name_clean = skills
-
-            # N-gram vectorizer setup
+        if len(resume_skills) == 0:
+            st.warning("No skills found in your resume.")
+        else:
+            # TF-IDF Vectorizer
+            skills_text = [' '.join(resume_skills)]
             def ngrams(string, n=3):
                 string = fix_text(string)
                 string = string.encode("ascii", errors="ignore").decode()
@@ -109,73 +100,29 @@ def submit_data():
                 return [''.join(ngram) for ngram in ngrams]
 
             vectorizer = TfidfVectorizer(min_df=1, analyzer=ngrams, lowercase=False)
-            tfidf = vectorizer.fit_transform(org_name_clean)
-            print('Vectorizing completed...')
+            tfidf = vectorizer.fit_transform(skills_text)
+            nbrs = NearestNeighbors(n_neighbors=1, n_jobs=-1).fit(tfidf)
+            unique_org = (df['clean'].values)
 
-            # Nearest Neighbor Matching
             def getNearestN(query):
                 queryTFIDF_ = vectorizer.transform(query)
                 distances, indices = nbrs.kneighbors(queryTFIDF_)
                 return distances, indices
 
-            nbrs = NearestNeighbors(n_neighbors=1, n_jobs=-1).fit(tfidf)
-            unique_org = (df['test'].values)
             distances, indices = getNearestN(unique_org)
+            matches = [round(d[0], 2) for d in distances]
+            df['Match_Confidence'] = matches
+            df_sorted = df.sort_values('Match_Confidence').head(10)
 
-            unique_org = list(unique_org)
-            matches = []
-            for i, j in enumerate(indices):
-                dist = round(distances[i][0], 2)
-                matches.append([dist])
+            st.subheader("🎯 Top Job Recommendations")
+            for _, row in df_sorted.iterrows():
+                st.markdown(f"""
+                **Position:** {row['Position']}  
+                **Company:** {row['Company']}  
+                **Location:** {row['Location']}  
+                [🔗 Job Link]({row['link']})
+                ---
+                """)
 
-            matches = pd.DataFrame(matches, columns=['Match confidence'])
-            df['match'] = matches['Match confidence']
-
-            # Sort by best match
-            df1 = df.sort_values('match')
-            df2 = df1[['Position', 'Company', 'Location', 'link']].head(10).reset_index()
-
-            # Clean up location text
-            df2['Location'] = df2['Location'].astype(str)
-            df2['Location'] = df2['Location'].str.replace(r'[^\x00-\x7F]', '', regex=True)
-            df2['Location'] = df2['Location'].str.replace("â€“", "", regex=False)
-
-            dropdown_locations = sorted(df2['Location'].unique())
-
-            # Prepare list of jobs for rendering
-            job_list = []
-            for _, row in df2.iterrows():
-                job_list.append({
-                    'Position': row['Position'],
-                    'Company': row['Company'],
-                    'Location': row['Location'],
-                    'Link': row['link']
-                })
-
-            # ✅ Return the results page (must return something)
-            return render_template('results.html', job_list=job_list, dropdown_locations=dropdown_locations)
-
-        except Exception as e:
-            print("Error in /submit:", e)
-            return f"An error occurred while processing your resume: {e}", 500
-
-    # ✅ For GET requests, redirect to home
-    return redirect('/')
-
-@app.route('/filter', methods=['GET'])
-def filter_jobs():
-    location = request.args.get('location')
-    filtered = df.copy()
-    if location:
-        filtered = filtered[filtered['Location'].str.contains(location, case=False, na=False)]
-    df2 = filtered[['Position', 'Company', 'Location', 'link']].head(10).reset_index(drop=True)
-    job_list = df2.to_dict('records')
-    dropdown_locations = sorted(df['Location'].unique())
-    return render_template('results.html', job_list=job_list, dropdown_locations=dropdown_locations)
-
-
-# -------------------------
-# RUN APP
-# -------------------------
-if __name__ == "__main__":
-    app.run(debug=True)
+    except Exception as e:
+        st.error(f"Error parsing resume: {e}")
