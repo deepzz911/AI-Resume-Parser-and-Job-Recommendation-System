@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Your Job Matches</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+
+<body class="bg-[#f9fafb] font-[Arial] min-h-screen">
+  <header class="bg-white shadow-sm fixed top-0 w-full z-50">
+    <div class="max-w-8xl mx-auto flex items-center justify-between py-4 px-6">
+      <h1 class="text-4xl font-bold text-blue-600">SkillSight</h1>
+        </div>
+  </header>
+  <div class="max-w-6xl mx-auto py-20 px-6">
+    <h1 class="text-4xl font-bold text-blue-700 text-center mb-10">Your Best Job Matches 🔍</h1>
+
+<form method="GET" action="/filter" class="flex gap-4 mt-6 mb-10 
+justify-center">
+  <select name="location" class="border rounded-lg px-3 py-2">
+    <option value="">All Locations</option>
+    {% for loc in dropdown_locations %}
+      <option value="{{ loc }}">{{ loc }}</option>
+    {% endfor %}
+  </select>
+  <button type="submit" class="bg-blue-600 text-white px-4 py-2 
+  rounded-lg">Filter</button>
+</form>
+
+   <div class="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
+  {% for job in job_list %}
+  <a href="{{ job.Link }}" target="_blank" class="no-underline">
+    <div class="bg-white rounded-xl p-6 shadow-lg hover:shadow-2xl 
+    transition-all duration-300 border border-gray-100 hover:scale-[1.02]">
+      <h3 class="text-xl font-semibold text-gray-900">{{ job.Position }}</h3>
+      <p class="text-blue-600 mt-1 font-medium">{{ job.Company }}</p>
+      <p class="text-gray-500 text-sm mt-2">{{ job.Location }}</p>
+    </div>
+  </a>
+  {% endfor %}
+</div>
+
+
+    <div class="text-center mt-12">
+      <a href="/upload" class="bg-blue-600 text-white px-6 py-3 rounded-xl hover:bg-blue-700 transition">Upload Another Resume</a>
+    </div>
+  </div>
+</body>
+</html>
