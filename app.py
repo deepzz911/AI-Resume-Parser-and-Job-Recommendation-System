@@ -222,7 +222,17 @@ def filter_jobs():
     if location:
         filtered = filtered[filtered['Location'].str.contains(location, case=False, na=False)]
     df2 = filtered[['Position', 'Company', 'Location', 'link']].head(10).reset_index(drop=True)
-    job_list = df2.to_dict('records')
+
+    # Build job_list with same keys as submit_data (use 'Link' capitalized)
+    job_list = []
+    for _, row in df2.iterrows():
+        job_list.append({
+            'Position': row['Position'],
+            'Company': row['Company'],
+            'Location': row['Location'],
+            'Link': row['link']
+        })
+
     dropdown_locations = sorted(df['Location'].unique())
     return render_template('results.html', job_list=job_list, dropdown_locations=dropdown_locations)
 
