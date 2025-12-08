@@ -1,39 +1,36 @@
 from pyresparser import ResumeParser
 from docx import Document
 from flask import Flask, render_template, redirect, request
+from werkzeug.utils import secure_filename
 import numpy as np
 import pandas as pd
 import re
 from ftfy import fix_text
 from nltk.corpus import stopwords
+import nltk
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.neighbors import NearestNeighbors
-import spacy
-import nltk
+import os
+import PyPDF2
 
 # -------------------------
-# SETUP
+# NLTK SETUP
 # -------------------------
-# Commented out the hardcoded NLTK path which might not exist on this system
-# nltk.data.path.append('C:\\Users\\Dell/nltk_data')
-# Made NLTK download more robust with exception handling
 try:
-    nltk.download('stopwords', quiet=True)
-    nltk.download('punkt', quiet=True)
-    nltk.download('averaged_perceptron_tagger', quiet=True)
-    nltk.download('maxent_ne_chunker', quiet=True)
-    nltk.download('words', quiet=True)
+    try:
+        nltk.data.find('corpora/stopwords')
+    except LookupError:
+        nltk.download('stopwords', quiet=True)
+    stopw = set(stopwords.words('english'))
 except Exception as e:
-    print(f"Warning: Could not download NLTK data: {e}")
-
-stopw = set(stopwords.words('english'))
+    print(f"Warning initializing stopwords: {e}")
+    stopw = set()
 
 # -------------------------
 # LOAD SCRAPED JOB DATA
 # -------------------------
 df = pd.read_csv('all_jobs.csv')
 
-# Rename columns to match Flask logic
 df.rename(columns={
     'title': 'Position',
     'company': 'Company',
@@ -41,10 +38,20 @@ df.rename(columns={
     'description': 'Job_Description'
 }, inplace=True)
 
-# Clean & preprocess job descriptions
-df['test'] = df['Job_Description'].apply(
-    lambda x: ' '.join([word for word in str(x).split() if len(word) > 2 and word.lower() not in stopw])
-)
+if 'link' not in df.columns:
+    df['link'] = ''
+
+df['Location'] = df['Location'].astype(str)
+df['Location'] = df['Location'].str.replace(r'[^\x00-\x7F]', '', regex=True)
+df['Location'] = df['Location'].str.replace("â€“", "", regex=False)
+
+def clean_text(x):
+    return ' '.join(
+        word for word in str(x).split()
+        if len(word) > 2 and word.lower() not in stopw
+    )
+
+df['test'] = df['Job_Description'].apply(clean_text)
 print(df["Location"])
 
 # -------------------------
@@ -52,93 +59,89 @@ print(df["Location"])
 # -------------------------
 app = Flask(__name__)
 
+UPLOAD_FOLDER = 'Uploaded_Resumes'
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+
+
 @app.route('/')
 def hello():
     return render_template("index.html")
+
 
 @app.route('/upload')
 def upload():
     return render_template('upload.html')
 
+
 @app.route("/home")
 def home():
     return redirect('/')
+
 
 @app.route('/submit', methods=['GET', 'POST'])
 def submit_data():
     if request.method == 'POST':
         try:
             f = request.files['userfile']
-            f.save(f.filename)
-            print("Saved file:", f.filename)
+            filename = secure_filename(f.filename)
+            filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+            f.save(filepath)
+            print("Saved file:", filepath)
 
-            # Try reading .docx file and extracting text with comprehensive error handling
-            data = None
-            errors = []
-            
-            # First, try to detect file type and handle accordingly
-            filename = f.filename.lower()
-            
-            # Handle PDF files
-            if filename.endswith('.pdf'):
+            lower_name = filename.lower()
+            skills_text = ""
+
+            # ------------ PDF RESUMES ------------
+            if lower_name.endswith('.pdf'):
                 try:
-                    data = ResumeParser(f.filename).get_extracted_data()
+                    with open(filepath, 'rb') as pdf_file:
+                        reader = PyPDF2.PdfReader(pdf_file)
+                        text_pages = []
+                        for page in reader.pages:
+                            page_text = page.extract_text() or ""
+                            text_pages.append(page_text)
+                        skills_text = "\n".join(text_pages).strip()
+                    print("Extracted PDF text length:", len(skills_text))
                 except Exception as e:
-                    errors.append(f"PDF parsing failed: {str(e)}")
-                    print(errors[-1])
-            
-            # Handle DOCX files
-            elif filename.endswith('.docx'):
+                    print("PDF read failed:", e)
+
+            # ------------ DOCX RESUMES ------------
+            elif lower_name.endswith('.docx'):
                 try:
-                    # Try reading .docx file and extracting text
-                    doc = Document(f.filename)
-                    print("Document opened successfully")
-                    data = ResumeParser(f.filename).get_extracted_data()
+                    doc = Document(filepath)
+                    full_text = "\n".join(p.text for p in doc.paragraphs)
+                    skills_text = full_text.strip()
+                    print("Extracted DOCX text length:", len(skills_text))
                 except Exception as e:
-                    errors.append(f"DOCX parsing failed: {str(e)}")
-                    print(errors[-1])
-                    
-                    # Try fallback method
-                    try:
-                        data = ResumeParser(f.filename).get_extracted_data()
-                    except Exception as e2:
-                        errors.append(f"DOCX fallback parsing failed: {str(e2)}")
-                        print(errors[-1])
-            
-            # Handle other formats with default parser
-            else:
+                    print("DOCX read failed:", e)
+
+            # ------------ OTHER FORMATS (fallback to ResumeParser) ------------
+            if not skills_text:
                 try:
-                    data = ResumeParser(f.filename).get_extracted_data()
+                    from pyresparser import ResumeParser
+                    data = ResumeParser(filepath).get_extracted_data()
+                    print("Parsed data from ResumeParser:", data)
+
+                    if isinstance(data, dict):
+                        parts = []
+                        for v in data.values():
+                            if isinstance(v, list):
+                                parts.append(" ".join(str(x) for x in v))
+                            else:
+                                parts.append(str(v))
+                        skills_text = " ".join(parts).strip()
                 except Exception as e:
-                    errors.append(f"Default parsing failed: {str(e)}")
-                    print(errors[-1])
+                    print("ResumeParser failed:", e)
 
-            # If all attempts failed, create minimal data structure
-            if data is None:
-                print("All parsing attempts failed, using minimal data structure")
-                data = {
-                    'skills': ['Python', 'Communication', 'Teamwork'],  # Sample skills for demo
-                    'experience': [],
-                    'education': [],
-                    'name': 'Sample User',
-                    'email': 'sample@example.com',
-                    'mobile_number': '123-456-7890'
-                }
+            # If still nothing, give error
+            if not skills_text or not skills_text.strip():
+                return "Could not extract meaningful text from your resume. Please upload a text-based PDF or DOCX.", 400
 
-            # Extract skills from resume
-            resume = data.get('skills', [])
-            print("Extracted skills:", resume)
-
-            # Ensure we have some skills to work with
-            if not resume:
-                # Provide sample skills if none were extracted
-                resume = ['Python', 'Communication', 'Teamwork']
-                print("No skills found, using sample skills:", resume)
-            
-            skills = [' '.join(resume)] if resume else ['']
+            # ------------ USE RESUME TEXT FOR MATCHING ------------
+            skills = [skills_text]
             org_name_clean = skills
 
-            # N-gram vectorizer setup
             def ngrams(string, n=3):
                 string = fix_text(string)
                 string = string.encode("ascii", errors="ignore").decode()
@@ -153,29 +156,25 @@ def submit_data():
                 string = re.sub(' +', ' ', string).strip()
                 string = ' ' + string + ' '
                 string = re.sub(r'[,-./]|\sBD', r'', string)
-                ngrams = zip(*[string[i:] for i in range(n)])
-                return [''.join(ngram) for ngram in ngrams]
+                ngrams_list = zip(*[string[i:] for i in range(n)])
+                return [''.join(ngram) for ngram in ngrams_list]
 
-            # Handle empty skills case
             if not any(org_name_clean):
-                # Use a default skill string if all entries are empty
-                org_name_clean = ['python programming']
+                return "Empty resume text after preprocessing.", 400
 
             vectorizer = TfidfVectorizer(min_df=1, analyzer=ngrams, lowercase=False)
             tfidf = vectorizer.fit_transform(org_name_clean)
             print('Vectorizing completed...')
 
-            # Nearest Neighbor Matching
             def getNearestN(query):
                 queryTFIDF_ = vectorizer.transform(query)
                 distances, indices = nbrs.kneighbors(queryTFIDF_)
                 return distances, indices
 
             nbrs = NearestNeighbors(n_neighbors=1, n_jobs=-1).fit(tfidf)
-            unique_org = (df['test'].values)
+            unique_org = df['test'].values
             distances, indices = getNearestN(unique_org)
 
-            unique_org = list(unique_org)
             matches = []
             for i, j in enumerate(indices):
                 dist = round(distances[i][0], 2)
@@ -184,18 +183,11 @@ def submit_data():
             matches = pd.DataFrame(matches, columns=['Match confidence'])
             df['match'] = matches['Match confidence']
 
-            # Sort by best match
             df1 = df.sort_values('match')
             df2 = df1[['Position', 'Company', 'Location', 'link']].head(10).reset_index()
 
-            # Clean up location text
-            df2['Location'] = df2['Location'].astype(str)
-            df2['Location'] = df2['Location'].str.replace(r'[^\x00-\x7F]', '', regex=True)
-            df2['Location'] = df2['Location'].str.replace("â€“", "", regex=False)
-
             dropdown_locations = sorted(df2['Location'].unique())
 
-            # Prepare list of jobs for rendering
             job_list = []
             for _, row in df2.iterrows():
                 job_list.append({
@@ -205,15 +197,15 @@ def submit_data():
                     'Link': row['link']
                 })
 
-            # ✅ Return the results page (must return something)
             return render_template('results.html', job_list=job_list, dropdown_locations=dropdown_locations)
 
         except Exception as e:
             print("Error in /submit:", e)
             return f"An error occurred while processing your resume: {e}", 500
 
-    # ✅ For GET requests, redirect to home
     return redirect('/')
+
+
 
 @app.route('/filter', methods=['GET'])
 def filter_jobs():
@@ -237,8 +229,5 @@ def filter_jobs():
     return render_template('results.html', job_list=job_list, dropdown_locations=dropdown_locations)
 
 
-# -------------------------
-# RUN APP
-# -------------------------
 if __name__ == "__main__":
     app.run(debug=True)

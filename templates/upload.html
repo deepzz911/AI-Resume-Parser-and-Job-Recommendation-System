@@ -32,17 +32,20 @@ enctype="multipart/form-data" class="space-y-6">
 
 
     <div id="loading" class="hidden mt-8 flex flex-col items-center">
-      <img src="https://assets2.lottiefiles.com/private_files/lf30_jmgekfqg.json"
-           alt="loading animation" class="w-32 animate-pulse">
+      <!-- Rotating spinner (Tailwind animate-spin) -->
+      <div class="w-20 h-20 rounded-full border-4 border-blue-200 border-t-blue-600 animate-spin"></div>
       <p class="text-gray-500 mt-3">Analyzing your resume...</p>
     </div>
   </div>
-
+  
   <script>
     const form = document.getElementById('uploadForm');
     const loading = document.getElementById('loading');
-    form.addEventListener('submit', () => {
+    form.addEventListener('submit', (e) => {
       loading.classList.remove('hidden');
+      // allow a short tick so the animation can render before the browser navigates
+      e.preventDefault();
+      setTimeout(() => form.submit(), 150);
     });
   </script>
 </body>

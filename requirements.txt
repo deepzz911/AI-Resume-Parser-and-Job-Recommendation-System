@@ -54,3 +54,4 @@ urllib3==2.0.4
 wasabi==0.10.1
 wcwidth==0.2.6
 Werkzeug==2.3.7
+PyPDF2==3.0.1
